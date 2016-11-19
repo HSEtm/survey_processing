@@ -1,49 +1,88 @@
-from os import listdir
-from os.path import isfile, join
-from openpyxl import load_workbook
+from os import listdir, makedirs
+from os.path import isfile, join, splitext, exists
 import pandas as pd
 
 
-# sheet_names = ('Блок 1. Конкурентоспособность', 'Блок 2. НТ уровень', 'Блок 3. Импортозамещение', 'Блок 4. ИиР')
-# frames = process_folder('data', sheet_names)
-# dics = process_dics('dics', 'Лист1')
-# frames[0][0][frames[0][0].columns[0]]
-# df = pd.read_excel(io='data/Анкета_фотоника.xls', sheetname='Блок 1. Конкурентоспособность', header=1)
-# df[~df[df.columns[1]].isnull()]
-
-def process_folder(folder_path, sheet_names):
+# Method for processing initial Excel survey data
+def process_folder(folder_path, sheet_ns):
     paths = [f for f in listdir(folder_path) if isfile(join(folder_path, f))]
-    frames = []
+    d = dict()
     for path in paths:
         filename = join(folder_path, path)
-        sheets = []
-        for sheet_name in sheet_names:
-            df = pd.read_excel(io=filename, sheetname=sheet_name, header=1)
-            df = df[df.columns[0:4]][~df[df.columns[1]].isnull()]
-            df.columns = (1, 2, 3, 4)
-            sheets.append(df)
-        frames.append(sheets)
-    return frames
+        for sheet_n in sheet_ns:
+            dataf = pd.read_excel(io=filename, sheetname=sheet_n, skiprows=range(0, 3))
+            dataf = dataf[dataf.columns[0:2]][~dataf[dataf.columns[1]].isnull()]
+            dataf.columns = ('product', 'indicator')
+            # TODO add other column processing in future
+            try:
+                d[sheet_n].append(dataf)
+            except:
+                d[sheet_n] = []
+                d[sheet_n].append(dataf)
+    return d
 
 
-def process_dics(folder_path, sheet_name):
+# Method for processing dictionaries
+def process_dics(folder_path, sheet_n):
     paths = [f for f in listdir(folder_path) if isfile(join(folder_path, f))]
-    dics = []
+    d = dict()
     for path in paths:
         filename = join(folder_path, path)
-        df = pd.read_excel(io=filename, sheetname=sheet_name, header=0)
-        df.columns = (1, 2)
-        dics.append(df)
-    return dics
+        dataf = pd.read_excel(io=filename, sheetname=sheet_n, header=0)
+        dataf.columns = ('product', 'group')
+        d[splitext(path)[0]] = dataf
+    return d
 
 
-def export_to_file(file_path, frames, dics, sheet_names):
-    # http://stackoverflow.com/questions/20219254/how-to-write-to-an-existing-excel-file-without-overwriting-data-using-pandas
-    book = load_workbook(file_path)
-    writer = pd.ExcelWriter(path=file_path, engine='xlsxwriter')
-    writer.book = book
-    writer.sheets = dict((ws.title, ws) for ws in book.worksheets)
-    for frame in frames:
-        for x in range(0, len(sheet_names)):
-            frame[x].to_excel(excel_writer=writer, sheet_name=sheet_names[x], startrow=0)
-    writer.save()
+# Method for scoring results based on mean value
+def scoring(x, **kwargs):
+    if x <= 1.75:
+        return kwargs['score_types'][0]
+    elif x < 2.5:
+        return kwargs['score_types'][1]
+    elif x < 3.5:
+        return kwargs['score_types'][2]
+    elif x < 4.5:
+        return kwargs['score_types'][3]
+    else:
+        return kwargs['score_types'][4]
+
+
+# Excel sheets of survey that need to be processed
+sheet_names = ('Блок 1. Конкурентоспособность', 'Блок 2. НТ уровень', 'Блок 3. Импортозамещение', 'Блок 4. ИиР')
+# Scoring values
+scores = dict()
+scores['Блок 1. Конкурентоспособность'] = ['1 - низкая', '2 - средняя', '3 - высокая']
+scores['Блок 2. НТ уровень'] = ['1 - низкий', '2 - средний', '3 - высокий']
+scores['Блок 3. Импортозамещение'] = ['1 - отсутствуют и не могут быть созданы в ближайшие 5 лет',
+                                      '2 - отсутствуют, но могут быть созданы в ближайшие 5 лет',
+                                      ('3 - отдельные элементы технологической цепочки производства, ' +
+                                       'производство полного цикла может быть создано в ближайшие 1-2 года'),
+                                      '4 - полная технологическая цепочка для производства импортозамещающей продукции',
+                                      '5 - объем производимой в РФ продукции соизмерим или превосходит объем импорта']
+scores['Блок 4. ИиР'] = ['1 - «Белые пятна»', '2 - Зоны кооперации', '3 - Лидерство']
+# Folder with data
+data = process_folder('data', sheet_names)
+# Dictionaries with description of objects and their categories, file names must be equal to survey sheets
+dics = process_dics('dics', 'Лист1')
+# Folder and file name for results
+output_folder = 'output'
+writer = pd.ExcelWriter(path=join(output_folder, 'photonics_results.xlsx'), engine='openpyxl')
+
+# Loop for processing very similar Excel survey sheets. If data structure is different, additional work is needed
+for sheet_name in sheet_names:
+    df = pd.concat(data[sheet_name])
+    df_merged = pd.merge(left=df, right=dics[sheet_name], how='inner', on='product')
+    df_merged['count'] = 1
+    df_merged['measure'] = df_merged['indicator'].str[0].astype(int)
+    df_grouped = df_merged.groupby(['group', 'product', 'indicator', 'measure'])[
+        'count'].count().to_frame().reset_index()
+    df_grouped['score'] = df_grouped['measure'] * df_grouped['count']
+    df_result = df_grouped.groupby(['group', 'product']).score.sum().to_frame().reset_index()
+    df_result['score'] /= 3
+    df_result['result'] = df_result['score'].apply(scoring, score_types=scores[sheet_name])
+    df_result.to_excel(excel_writer=writer, sheet_name=sheet_name, startrow=0)
+
+if not exists(output_folder):
+    makedirs(output_folder)
+writer.save()
