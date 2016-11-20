@@ -77,9 +77,9 @@ for sheet_name in sheet_names:
     df_merged['measure'] = df_merged['indicator'].str[0].astype(int)
     df_grouped = df_merged.groupby(['group', 'product', 'indicator', 'measure'])[
         'count'].count().to_frame().reset_index()
-    df_grouped['score'] = df_grouped['measure'] * df_grouped['count']
-    df_result = df_grouped.groupby(['group', 'product']).score.sum().to_frame().reset_index()
-    df_result['score'] /= 3
+    df_grouped['experts'] = df_grouped.groupby(['group', 'product'])['count'].transform('sum')
+    df_grouped['score'] = df_grouped['measure'] * (df_grouped['count'] / df_grouped['experts'])
+    df_result = df_grouped.groupby(['group', 'product', 'experts']).score.sum().to_frame().reset_index()
     df_result['result'] = df_result['score'].apply(scoring, score_types=scores[sheet_name])
     df_result.to_excel(excel_writer=writer, sheet_name=sheet_name, startrow=0)
 
